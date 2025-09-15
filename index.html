@@ -1,0 +1,141 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Direct to Google Drive (Resumable Upload)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Google Identity Services (token model) -->
+  https://accounts.google.com/gsi/client
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:2rem;max-width:900px}
+    .muted{color:#667085}
+    progress{width:100%;height:12px}
+    .file{border:1px solid #e5e7eb;border-radius:10px;padding:10px;margin:10px 0}
+  </style>
+</head>
+<body>
+  <h1>Direct Upload to Google Drive (Resumable)</h1>
+  <p class="muted">Authorize once, then upload files directly to your Drive with resume support.</p>
+
+  <div>
+    <button id="auth">Authorize</button>
+    <label style="margin-left:1rem">Optional target folder ID:
+      <input id="folder" type="text" placeholder="leave blank for My Drive root" style="width:360px">
+    </label>
+  </div>
+
+  <input id="picker" type="file" multiple style="display:block;margin:1rem 0">
+  <div id="list"></div>
+
+  <script>
+    // --------- CONFIG ---------
+    const CLIENT_ID = 'YOUR_CLIENT_ID';
+    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege recommended [3](https://discuss.google.dev/t/resumable-simultaneous-multipart-upload-to-gcs-bucket/183929)
+    const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB chunks (Drive supports resumable uploads) [1](blob:https://m365.cloud.microsoft/34e90cdb-af1e-4ca6-ba94-b926c4d0bd02)
+    // --------------------------
+
+    let tokenClient, accessToken = null;
+
+    // Init GIS token client
+    window.onload = () => {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPE,
+        callback: (resp) => {
+          if (resp && resp.access_token) {
+            accessToken = resp.access_token;
+            alert('Authorized. You can select files now.');
+          }
+        }
+      });
+    };
+
+    document.getElementById('auth').onclick = () => {
+      tokenClient.requestAccessToken({ prompt: '' }); // popup once, then silent refresh allowed [2](https://cloud.google.com/storage/docs/using-cors)
+    };
+
+    function row(name) {
+      const div = document.createElement('div');
+      div.className = 'file';
+      div.innerHTML = `
+        <div><b>${name}</b></div>
+        <progress value="0" max="100"></progress>
+        <div class="muted" data-status>Waiting…</div>`;
+      document.getElementById('list').appendChild(div);
+      return div;
+    }
+
+    async function startResumable(file, folderId) {
+      const metadata = { name: file.name };
+      if (folderId) metadata.parents = [folderId];
+      const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Type': file.type || 'application/octet-stream',
+          'X-Upload-Content-Length': String(file.size)
+        },
+        body: JSON.stringify(metadata)
+      });
+      if (!initRes.ok) throw new Error('init ' + initRes.status);
+      return initRes.headers.get('Location'); // session URL
+    }
+
+    async function uploadChunks(sessionUrl, file, onProgress) {
+      let offset = 0;
+      while (offset < file.size) {
+        const end = Math.min(offset + CHUNK_SIZE, file.size);
+        const chunk = file.slice(offset, end);
+        const res = await fetch(sessionUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': file.type || 'application/octet-stream',
+            'Content-Length': String(chunk.size),
+            'Content-Range': `bytes ${offset}-${end-1}/${file.size}`
+          },
+          body: chunk
+        });
+
+        if (res.status === 308) {
+          const range = res.headers.get('Range'); // e.g. "bytes=0-8388607"
+          if (range) {
+            const m = range.match(/-(\d+)$/);
+            offset = m ? (parseInt(m[1],10) + 1) : end;
+          } else {
+            offset = end;
+          }
+          onProgress(Math.round((offset / file.size) * 100));
+        } else if (res.ok) {
+          onProgress(100);
+          return await res.json(); // final file resource
+        } else {
+          throw new Error('upload ' + res.status);
+        }
+      }
+    }
+
+    document.getElementById('picker').addEventListener('change', async (e) => {
+      if (!accessToken) return alert('Click Authorize first.');
+      const folderId = document.getElementById('folder').value.trim();
+
+      for (const file of e.target.files) {
+        const ui = row(file.name);
+        const progress = ui.querySelector('progress');
+        const status = ui.querySelector('[data-status]');
+        try {
+          status.textContent = 'Starting session…';
+          const sessionUrl = await startResumable(file, folderId); // Drive resumable upload start [1](blob:https://m365.cloud.microsoft/34e90cdb-af1e-4ca6-ba94-b926c4d0bd02)
+          status.textContent = 'Uploading…';
+          const result = await uploadChunks(sessionUrl, file, pct => progress.value = pct);
+          const fileId = result.id;
+          status.innerHTML = `Done — https://drive.google.com/file/d/${fileId}/view`;
+        } catch (err) {
+          status.textContent = 'Error: ' + err.message;
+        }
+      }
+    });
+  </script>
+</body>
+</html>
