@@ -1,14 +1,10 @@
-
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Direct to Google Drive (Resumable Upload)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Google Identity Services (token model) -->
-  https://accounts.google.com/gsi/client
-  <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:2rem;max-width:900px}
+  <script src="https://accounts.google.com/gsi/client" async defer></ly:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:2rem;max-width:900px}
     .muted{color:#667085}
     progress{width:100%;height:12px}
     .file{border:1px solid #e5e7eb;border-radius:10px;padding:10px;margin:10px 0}
@@ -29,15 +25,12 @@
   <div id="list"></div>
 
   <script>
-    // --------- CONFIG ---------
-    const CLIENT_ID = 'YOUR_CLIENT_ID';
-    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege recommended [3](https://discuss.google.dev/t/resumable-simultaneous-multipart-upload-to-gcs-bucket/183929)
-    const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB chunks (Drive supports resumable uploads) [1](blob:https://m365.cloud.microsoft/34e90cdb-af1e-4ca6-ba94-b926c4d0bd02)
-    // --------------------------
+    const CLIENT_ID = 'YOUR_CLIENT_ID'; // Replace with your OAuth Client ID
+    const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+    const CHUNK_SIZE = 8 * 1024 * 1024;
 
     let tokenClient, accessToken = null;
 
-    // Init GIS token client
     window.onload = () => {
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
@@ -52,7 +45,7 @@
     };
 
     document.getElementById('auth').onclick = () => {
-      tokenClient.requestAccessToken({ prompt: '' }); // popup once, then silent refresh allowed [2](https://cloud.google.com/storage/docs/using-cors)
+      tokenClient.requestAccessToken({ prompt: '' });
     };
 
     function row(name) {
@@ -80,7 +73,7 @@
         body: JSON.stringify(metadata)
       });
       if (!initRes.ok) throw new Error('init ' + initRes.status);
-      return initRes.headers.get('Location'); // session URL
+      return initRes.headers.get('Location');
     }
 
     async function uploadChunks(sessionUrl, file, onProgress) {
@@ -99,7 +92,7 @@
         });
 
         if (res.status === 308) {
-          const range = res.headers.get('Range'); // e.g. "bytes=0-8388607"
+          const range = res.headers.get('Range');
           if (range) {
             const m = range.match(/-(\d+)$/);
             offset = m ? (parseInt(m[1],10) + 1) : end;
@@ -109,7 +102,7 @@
           onProgress(Math.round((offset / file.size) * 100));
         } else if (res.ok) {
           onProgress(100);
-          return await res.json(); // final file resource
+          return await res.json();
         } else {
           throw new Error('upload ' + res.status);
         }
@@ -126,7 +119,7 @@
         const status = ui.querySelector('[data-status]');
         try {
           status.textContent = 'Starting session…';
-          const sessionUrl = await startResumable(file, folderId); // Drive resumable upload start [1](blob:https://m365.cloud.microsoft/34e90cdb-af1e-4ca6-ba94-b926c4d0bd02)
+          const sessionUrl = await startResumable(file, folderId);
           status.textContent = 'Uploading…';
           const result = await uploadChunks(sessionUrl, file, pct => progress.value = pct);
           const fileId = result.id;
