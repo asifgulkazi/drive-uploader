@@ -1,16 +1,16 @@
-
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8" />
   <title>Direct to Google Drive (Resumable Upload)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Improve connection to GIS host -->
+  https://accounts.google.com
+  https://accounts.google.com
 
   <!-- Google Identity Services -->
-  https://accounts.google.com/gsi/client
-
-  <style>
-    :root { --muted:#667085; --ok:#16a34a; --warn:#f59e0b; --err:#dc2626; }
+  <script id="gis" src="https://accounts.google.com/gsi/client" asynced:#667085; --ok:#16a34a; --warn:#f59e0b; --err:#dc2626; }
     body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; max-width: 1000px; }
     .muted { color: var(--muted); }
     progress { width: 100%; height: 12px; }
@@ -19,6 +19,7 @@
     .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
     code{background:#f3f4f6;padding:2px 6px;border-radius:6px}
     .hidden{display:none}
+    button { cursor:pointer }
   </style>
 </head>
 <body>
@@ -40,7 +41,7 @@
     <div>Token client init: <span id="tcInit" class="warn">waiting…</span></div>
     <div>Last event: <span id="last">-</span></div>
     <div>Error: <span id="err" class="err">-</span></div>
-    <div class="muted">Tip: If nothing happens on Authorize, allow pop‑ups for <code>asifgulkazi.github.io</code>.</div>
+    <div class="muted">Tip: If nothing happens on Authorize, allow pop‑ups for <code>asifgulkazi.github.io</code> or try an Incognito window (disables extensions).</div>
   </div>
 
   <input id="picker" type="file" multiple style="display:block;margin:1rem 0">
@@ -48,12 +49,12 @@
 
   <script>
     // ========= CONFIG =========
-    const CLIENT_ID = '261750495231-jr3v20mqpou39i9bch15vcu5t6lhqscj.apps.googleusercontent.com'; // your client ID
-    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege scope (create/manage app files)
-    const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB
+    const CLIENT_ID = '261750495231-jr3v20mqpou39i9bch15vcu5t6lhqscj.apps.googleusercontent.com'; // your Client ID
+    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege
+    const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB chunks
     // ==========================
 
-    // Shortcuts
+    // Helpers
     const $ = s => document.querySelector(s);
     const showDiag = () => $('#diagBox').classList.remove('hidden');
     const set = (id, text, cls) => { const el = document.getElementById(id); el.textContent = text; if (cls) el.className = cls; };
@@ -63,53 +64,77 @@
 
     let tokenClient = null, accessToken = null;
 
-    // Wait for GIS to be ready; then init token client
-    function initTokenClientWhenReady(tries = 0) {
+    // Try to init as soon as GIS script loads
+    const gisEl = document.getElementById('gis');
+    gisEl.addEventListener('load', () => {
+      set('gisLoaded', 'yes', 'ok');
+      initTokenClient();
+    });
+    gisEl.addEventListener('error', () => {
+      set('gisLoaded', 'load error', 'err');
+      logErr('Failed to load GIS (network or extension blocking accounts.google.com).');
+      setLine('GIS library failed to load. Try Incognito / allow pop-ups.', 'err');
+    });
+
+    // Safety: also poll for up to 30 seconds in case load event is missed by the browser
+    let pollCount = 0, pollTimer = setInterval(() => {
       if (window.google && google.accounts && google.accounts.oauth2) {
         set('gisLoaded', 'yes', 'ok');
-        try {
-          tokenClient = google.accounts.oauth2.initTokenClient({
-            client_id: CLIENT_ID,
-            scope: SCOPE,
-            callback: (resp) => {
-              if (resp && resp.access_token) {
-                accessToken = resp.access_token;
-                setLine('Authorized. You can select files now.', 'ok');
-              } else if (resp && resp.error) {
-                logLast('Callback error');
-                logErr(resp.error + (resp.error_description ? (': ' + resp.error_description) : ''));
-                setLine('Authorization failed. See diagnostics below.', 'err');
-              } else {
-                logLast('Callback without token');
-                logErr('No access token returned.');
-                setLine('Authorization failed. See diagnostics below.', 'err');
-              }
-            }
-          });
-          set('tcInit', 'yes', 'ok');
-        } catch (e) {
-          set('tcInit', 'failed', 'err');
-          logErr('initTokenClient error: ' + e.message);
-          setLine('Authorization init failed. See diagnostics.', 'err');
-        }
+        clearInterval(pollTimer);
+        if (!tokenClient) initTokenClient();
       } else {
         set('gisLoaded', 'loading…', 'warn');
-        if (tries < 60) return setTimeout(() => initTokenClientWhenReady(tries+1), 200);
-        set('gisLoaded', 'failed to load', 'err');
-        logErr('GIS library not loaded (network or content blocker).');
-        setLine('GIS library failed to load.', 'err');
+        if (++pollCount > 150) { // ~30s (150 * 200ms)
+          clearInterval(pollTimer);
+          set('gisLoaded', 'timeout', 'err');
+          logErr('GIS library did not load (check blockers/DNS).');
+          setLine('GIS library did not load. Try Incognito / disable extensions / check network.', 'err');
+        }
+      }
+    }, 200);
+
+    function initTokenClient() {
+      try {
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPE,
+          callback: (resp) => {
+            if (resp && resp.access_token) {
+              accessToken = resp.access_token;
+              setLine('Authorized. You can select files now.', 'ok');
+            } else if (resp && resp.error) {
+              logLast('Callback error');
+              logErr(resp.error + (resp.error_description ? (': ' + resp.error_description) : ''));
+              setLine('Authorization failed. See diagnostics below.', 'err');
+            } else {
+              logLast('Callback without token');
+              logErr('No access token returned.');
+              setLine('Authorization failed. See diagnostics below.', 'err');
+            }
+          }
+        });
+        set('tcInit', 'yes', 'ok');
+      } catch (e) {
+        set('tcInit', 'failed', 'err');
+        logErr('initTokenClient error: ' + e.message);
+        setLine('Authorization init failed. See diagnostics.', 'err');
       }
     }
-    window.addEventListener('load', () => { initTokenClientWhenReady(); });
+
     window.addEventListener('unhandledrejection', e => { logLast('Promise rejection'); logErr(String(e.reason || e)); });
     window.addEventListener('error', e => { logLast('Window error'); logErr((e.error && e.error.message) || e.message); });
 
     document.getElementById('auth').onclick = () => {
       logErr('-');
-      if (!tokenClient) { logLast('Token client not ready'); logErr('GIS not loaded or CLIENT_ID invalid.'); setLine('Token client not ready.', 'err'); return; }
+      if (!tokenClient) {
+        logLast('Token client not ready');
+        logErr('GIS not loaded or CLIENT_ID invalid.');
+        setLine('Token client not ready. If you use extensions, try Incognito.', 'err');
+        return;
+      }
       setLine('Requesting authorization…');
       try {
-        tokenClient.requestAccessToken({ prompt: '' });
+        tokenClient.requestAccessToken({ prompt: '' }); // request token; popup may appear first time
         setTimeout(() => {
           if (!accessToken) {
             logErr('No token yet. If nothing happened, allow pop‑ups for this site.');
@@ -167,7 +192,7 @@
         });
 
         if (res.status === 308) {
-          const range = res.headers.get('Range'); // e.g., "bytes=0-8388607"
+          const range = res.headers.get('Range'); // "bytes=0-8388607"
           if (range) {
             const m = range.match(/-(\d+)$/);
             offset = m ? (parseInt(m[1],10) + 1) : end;
@@ -177,7 +202,7 @@
           onProgress(Math.round((offset / file.size) * 100));
         } else if (res.ok) {
           onProgress(100);
-          return await res.json(); // final Drive file resource
+          return await res.json(); // Drive file resource
         } else {
           throw new Error('upload ' + res.status);
         }
