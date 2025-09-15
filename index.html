@@ -1,61 +1,133 @@
+
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Direct to Google Drive (Resumable Upload)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+
   <!-- Google Identity Services -->
   https://accounts.google.com/gsi/client
+
   <style>
-    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; max-width: 900px; }
-    .muted { color: #667085; }
+    :root { --muted:#667085; --ok:#16a34a; --warn:#f59e0b; --err:#dc2626; }
+    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; max-width: 1000px; }
+    .muted { color: var(--muted); }
     progress { width: 100%; height: 12px; }
     .file { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin: 10px 0; }
+    .panel { border:1px solid #e5e7eb; border-radius:10px; padding:12px; background:#fafafa; margin:12px 0; }
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    code{background:#f3f4f6;padding:2px 6px;border-radius:6px}
+    .hidden{display:none}
   </style>
 </head>
 <body>
   <h1>Direct Upload to Google Drive (Resumable)</h1>
   <p class="muted">Authorize once, then upload files directly to your Drive with resume support.</p>
 
-  <div>
+  <div class="panel">
     <button id="auth">Authorize</button>
     <label style="margin-left:1rem">Optional target folder ID:
       <input id="folder" type="text" placeholder="leave blank for My Drive root" style="width:360px">
     </label>
+    <div id="statusLine" class="muted" style="margin-top:8px;">Ready.</div>
+  </div>
+
+  <!-- Diagnostics (auto-shows only if there’s a problem) -->
+  <div id="diagBox" class="panel hidden">
+    <b>Diagnostics</b>
+    <div>GIS script loaded: <span id="gisLoaded" class="warn">waiting…</span></div>
+    <div>Token client init: <span id="tcInit" class="warn">waiting…</span></div>
+    <div>Last event: <span id="last">-</span></div>
+    <div>Error: <span id="err" class="err">-</span></div>
+    <div class="muted">Tip: If nothing happens on Authorize, allow pop‑ups for <code>asifgulkazi.github.io</code>.</div>
   </div>
 
   <input id="picker" type="file" multiple style="display:block;margin:1rem 0">
   <div id="list"></div>
 
   <script>
-    const CLIENT_ID = '261750495231-jr3v20mqpou39i9bch15vcu5t6lhqscj.apps.googleusercontent.com'; // Replace with your OAuth Client ID
-    const SCOPE = 'https://www.googleapis.com/auth/drive.file';
-    const CHUNK_SIZE = 8 * 1024 * 1024;
+    // ========= CONFIG =========
+    const CLIENT_ID = '261750495231-jr3v20mqpou39i9bch15vcu5t6lhqscj.apps.googleusercontent.com'; // your client ID
+    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege scope (create/manage app files)
+    const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB
+    // ==========================
 
-    let tokenClient, accessToken = null;
+    // Shortcuts
+    const $ = s => document.querySelector(s);
+    const showDiag = () => $('#diagBox').classList.remove('hidden');
+    const set = (id, text, cls) => { const el = document.getElementById(id); el.textContent = text; if (cls) el.className = cls; };
+    const setLine = (msg, cls) => { const s = document.getElementById('statusLine'); s.textContent = msg; s.className = cls || 'muted'; };
+    const logLast = m => { set('last', m); showDiag(); };
+    const logErr  = m => { set('err', m || '-'); showDiag(); };
 
-    window.onload = () => {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPE,
-        callback: (resp) => {
-          if (resp && resp.access_token) {
-            accessToken = resp.access_token;
-            alert('Authorized. You can select files now.');
-          }
+    let tokenClient = null, accessToken = null;
+
+    // Wait for GIS to be ready; then init token client
+    function initTokenClientWhenReady(tries = 0) {
+      if (window.google && google.accounts && google.accounts.oauth2) {
+        set('gisLoaded', 'yes', 'ok');
+        try {
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: CLIENT_ID,
+            scope: SCOPE,
+            callback: (resp) => {
+              if (resp && resp.access_token) {
+                accessToken = resp.access_token;
+                setLine('Authorized. You can select files now.', 'ok');
+              } else if (resp && resp.error) {
+                logLast('Callback error');
+                logErr(resp.error + (resp.error_description ? (': ' + resp.error_description) : ''));
+                setLine('Authorization failed. See diagnostics below.', 'err');
+              } else {
+                logLast('Callback without token');
+                logErr('No access token returned.');
+                setLine('Authorization failed. See diagnostics below.', 'err');
+              }
+            }
+          });
+          set('tcInit', 'yes', 'ok');
+        } catch (e) {
+          set('tcInit', 'failed', 'err');
+          logErr('initTokenClient error: ' + e.message);
+          setLine('Authorization init failed. See diagnostics.', 'err');
         }
-      });
-    };
+      } else {
+        set('gisLoaded', 'loading…', 'warn');
+        if (tries < 60) return setTimeout(() => initTokenClientWhenReady(tries+1), 200);
+        set('gisLoaded', 'failed to load', 'err');
+        logErr('GIS library not loaded (network or content blocker).');
+        setLine('GIS library failed to load.', 'err');
+      }
+    }
+    window.addEventListener('load', () => { initTokenClientWhenReady(); });
+    window.addEventListener('unhandledrejection', e => { logLast('Promise rejection'); logErr(String(e.reason || e)); });
+    window.addEventListener('error', e => { logLast('Window error'); logErr((e.error && e.error.message) || e.message); });
 
     document.getElementById('auth').onclick = () => {
-      tokenClient.requestAccessToken({ prompt: '' });
+      logErr('-');
+      if (!tokenClient) { logLast('Token client not ready'); logErr('GIS not loaded or CLIENT_ID invalid.'); setLine('Token client not ready.', 'err'); return; }
+      setLine('Requesting authorization…');
+      try {
+        tokenClient.requestAccessToken({ prompt: '' });
+        setTimeout(() => {
+          if (!accessToken) {
+            logErr('No token yet. If nothing happened, allow pop‑ups for this site.');
+            setLine('Awaiting popup / consent… If blocked, allow pop‑ups.', 'warn');
+          }
+        }, 1500);
+      } catch (e) {
+        logLast('requestAccessToken threw');
+        logErr(e.message);
+        setLine('Authorization failed. See diagnostics below.', 'err');
+      }
     };
 
     function row(name) {
       const div = document.createElement('div');
       div.className = 'file';
       div.innerHTML = `
-        <div><b>${name}</b></div>
+        <div><b>${name.replace(/[<>&]/g, s => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[s]))}</b></div>
         <progress value="0" max="100"></progress>
         <div class="muted" data-status>Waiting…</div>`;
       document.getElementById('list').appendChild(div);
@@ -95,7 +167,7 @@
         });
 
         if (res.status === 308) {
-          const range = res.headers.get('Range');
+          const range = res.headers.get('Range'); // e.g., "bytes=0-8388607"
           if (range) {
             const m = range.match(/-(\d+)$/);
             offset = m ? (parseInt(m[1],10) + 1) : end;
@@ -105,7 +177,7 @@
           onProgress(Math.round((offset / file.size) * 100));
         } else if (res.ok) {
           onProgress(100);
-          return await res.json();
+          return await res.json(); // final Drive file resource
         } else {
           throw new Error('upload ' + res.status);
         }
@@ -113,7 +185,7 @@
     }
 
     document.getElementById('picker').addEventListener('change', async (e) => {
-      if (!accessToken) return alert('Click Authorize first.');
+      if (!accessToken) { setLine('Click Authorize first.', 'warn'); alert('Click Authorize first.'); return; }
       const folderId = document.getElementById('folder').value.trim();
 
       for (const file of e.target.files) {
@@ -127,8 +199,12 @@
           const result = await uploadChunks(sessionUrl, file, pct => progress.value = pct);
           const fileId = result.id;
           status.innerHTML = `Done — https://drive.google.com/file/d/${fileId}/view`;
+          setLine('Upload complete.', 'ok');
         } catch (err) {
           status.textContent = 'Error: ' + err.message;
+          setLine('Upload failed: ' + err.message, 'err');
+          logLast('Upload error');
+          logErr(err.message);
         }
       }
     });
