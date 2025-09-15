@@ -4,22 +4,17 @@
   <meta charset="utf-8" />
   <title>Direct to Google Drive (Resumable Upload)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
-  <!-- Improve connection to GIS host -->
-  https://accounts.google.com
-  https://accounts.google.com
-
   <!-- Google Identity Services -->
-  <script id="gis" src="https://accounts.google.com/gsi/client" asynced:#667085; --ok:#16a34a; --warn:#f59e0b; --err:#dc2626; }
-    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; max-width: 1000px; }
-    .muted { color: var(--muted); }
+  https://accounts.google.com/gsi/client
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; max-width: 900px; }
+    .muted { color: #667085; }
     progress { width: 100%; height: 12px; }
     .file { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin: 10px 0; }
     .panel { border:1px solid #e5e7eb; border-radius:10px; padding:12px; background:#fafafa; margin:12px 0; }
-    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
-    code{background:#f3f4f6;padding:2px 6px;border-radius:6px}
-    .hidden{display:none}
-    button { cursor:pointer }
+    .ok { color:#16a34a } .warn { color:#f59e0b } .err { color:#dc2626 }
+    code { background:#f3f4f6; padding:2px 6px; border-radius:6px }
+    .hidden { display:none }
   </style>
 </head>
 <body>
@@ -50,7 +45,7 @@
   <script>
     // ========= CONFIG =========
     const CLIENT_ID = '261750495231-jr3v20mqpou39i9bch15vcu5t6lhqscj.apps.googleusercontent.com'; // your Client ID
-    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege
+    const SCOPE = 'https://www.googleapis.com/auth/drive.file'; // least-privilege scope
     const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB chunks
     // ==========================
 
@@ -64,63 +59,44 @@
 
     let tokenClient = null, accessToken = null;
 
-    // Try to init as soon as GIS script loads
-    const gisEl = document.getElementById('gis');
-    gisEl.addEventListener('load', () => {
-      set('gisLoaded', 'yes', 'ok');
-      initTokenClient();
-    });
-    gisEl.addEventListener('error', () => {
-      set('gisLoaded', 'load error', 'err');
-      logErr('Failed to load GIS (network or extension blocking accounts.google.com).');
-      setLine('GIS library failed to load. Try Incognito / allow pop-ups.', 'err');
-    });
-
-    // Safety: also poll for up to 30 seconds in case load event is missed by the browser
-    let pollCount = 0, pollTimer = setInterval(() => {
+    // Initialize token client only after GIS is ready
+    function tryInitTokenClient(tries = 0) {
       if (window.google && google.accounts && google.accounts.oauth2) {
         set('gisLoaded', 'yes', 'ok');
-        clearInterval(pollTimer);
-        if (!tokenClient) initTokenClient();
+        try {
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: CLIENT_ID,
+            scope: SCOPE,
+            callback: (resp) => {
+              if (resp && resp.access_token) {
+                accessToken = resp.access_token;
+                setLine('Authorized. You can select files now.', 'ok');
+              } else if (resp && resp.error) {
+                logLast('Callback error');
+                logErr(resp.error + (resp.error_description ? (': ' + resp.error_description) : ''));
+                setLine('Authorization failed. See diagnostics below.', 'err');
+              } else {
+                logLast('Callback without token');
+                logErr('No access token returned.');
+                setLine('Authorization failed. See diagnostics below.', 'err');
+              }
+            }
+          });
+          set('tcInit', 'yes', 'ok');
+        } catch (e) {
+          set('tcInit', 'failed', 'err');
+          logErr('initTokenClient error: ' + e.message);
+          setLine('Authorization init failed. See diagnostics.', 'err');
+        }
       } else {
         set('gisLoaded', 'loading…', 'warn');
-        if (++pollCount > 150) { // ~30s (150 * 200ms)
-          clearInterval(pollTimer);
-          set('gisLoaded', 'timeout', 'err');
-          logErr('GIS library did not load (check blockers/DNS).');
-          setLine('GIS library did not load. Try Incognito / disable extensions / check network.', 'err');
-        }
-      }
-    }, 200);
-
-    function initTokenClient() {
-      try {
-        tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: CLIENT_ID,
-          scope: SCOPE,
-          callback: (resp) => {
-            if (resp && resp.access_token) {
-              accessToken = resp.access_token;
-              setLine('Authorized. You can select files now.', 'ok');
-            } else if (resp && resp.error) {
-              logLast('Callback error');
-              logErr(resp.error + (resp.error_description ? (': ' + resp.error_description) : ''));
-              setLine('Authorization failed. See diagnostics below.', 'err');
-            } else {
-              logLast('Callback without token');
-              logErr('No access token returned.');
-              setLine('Authorization failed. See diagnostics below.', 'err');
-            }
-          }
-        });
-        set('tcInit', 'yes', 'ok');
-      } catch (e) {
-        set('tcInit', 'failed', 'err');
-        logErr('initTokenClient error: ' + e.message);
-        setLine('Authorization init failed. See diagnostics.', 'err');
+        if (tries < 60) return setTimeout(() => tryInitTokenClient(tries+1), 200);
+        set('gisLoaded', 'timeout', 'err');
+        logErr('GIS library did not load (extension or network block?).');
+        setLine('GIS library did not load. Try Incognito / disable extensions.', 'err');
       }
     }
-
+    window.addEventListener('load', () => tryInitTokenClient());
     window.addEventListener('unhandledrejection', e => { logLast('Promise rejection'); logErr(String(e.reason || e)); });
     window.addEventListener('error', e => { logLast('Window error'); logErr((e.error && e.error.message) || e.message); });
 
@@ -134,7 +110,7 @@
       }
       setLine('Requesting authorization…');
       try {
-        tokenClient.requestAccessToken({ prompt: '' }); // request token; popup may appear first time
+        tokenClient.requestAccessToken({ prompt: '' });
         setTimeout(() => {
           if (!accessToken) {
             logErr('No token yet. If nothing happened, allow pop‑ups for this site.');
@@ -202,7 +178,7 @@
           onProgress(Math.round((offset / file.size) * 100));
         } else if (res.ok) {
           onProgress(100);
-          return await res.json(); // Drive file resource
+          return await res.json(); // final Drive file resource
         } else {
           throw new Error('upload ' + res.status);
         }
